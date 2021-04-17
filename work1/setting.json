@@ -1,5 +1,5 @@
 {
-    "UDP_port": 8888,
+    "UDP_port": 40470,
     "data_size": 1024,
     "error_rate": 10,
     "lost_rate": 10,
