@@ -5,5 +5,5 @@
     "lost_rate": 10,
     "SW_size": 4,
     "init_seq_no":0,
-    "time_out": 1000
+    "time_out": 1
 }
