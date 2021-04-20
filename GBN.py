@@ -59,7 +59,7 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
     data += chr((frame_expected + SW_size) % (SW_size + 1)).encode()
     data += chr(file_state).encode()
     data += info
-    # print("send:", data)
+    print("send:", data)
     if thread[client_address].lost_cnt != lost_rate:
         thread[client_address].lost_cnt += 1
         server_socket.sendto(data, client_address)
@@ -71,7 +71,7 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
 def recv_data_thread():
     while True:
         receive_data, client = server_socket.recvfrom(data_size + 5)
-        # print("receive:", receive_data)
+        print("receive:", receive_data)
         file_state = int(receive_data[2])
         if client not in thread:
             if file_state != 0:
@@ -128,10 +128,10 @@ class host(threading.Thread):
         self.recv_file_name = str(host_id) + '_to_' + str(address)
         if os.path.exists(self.recv_file_name):
             os.remove(self.recv_file_name)
-        if os.path.exists(str(address) + "/" + str(self.host_id) + ".recv"):
-            os.remove(str(address) + "/" + str(self.host_id) + ".recv")
-        if os.path.exists(str(address) + "/" + str(self.host_id) + ".send"):
-            os.remove(str(address) + "/" + str(self.host_id) + ".send")
+        if os.path.exists(str(address) + "/" + "recvfrom_" + str(self.host_id)):
+            os.remove(str(address) + "/" + "recvfrom_" + str(self.host_id))
+        if os.path.exists(str(address) + "/" + "sendto_" + str(self.host_id)):
+            os.remove(str(address) + "/" + "sendto_" + str(self.host_id))
         self.frame_timer = dict()
         self.buffer = dict()
         self.buffer_cnt = 0
@@ -181,7 +181,7 @@ class host(threading.Thread):
             if not check_data(data):
                 status = "DataErr"
 
-            with open(str(address) + "/" + str(self.host_id) + ".recv", "a") as f:
+            with open(str(address) + "/" + "recvfrom_" + str(self.host_id), "a") as f:
                 record = "pdu_recv = " + str(self.recv_cnt) + ' , '
                 record += "staus = " + status + ' , '
                 record += "pdu_exp = " + str(self.frame_expected) + ' , '
@@ -217,7 +217,7 @@ class host(threading.Thread):
             if self.buffer[next_frame_to_send] == 2:
                 self.is_sending = False
 
-            with open(str(address) + "/" + str(self.host_id) + ".send", "a") as f:
+            with open(str(address) + "/" + "sendto_" + str(self.host_id), "a") as f:
                 record = "pdu_to_send = " + str(self.send_cnt) + ' , '
                 record += "staus = " + "NEW" + ' , '
                 record += "ackedNo = " + str(self.ack_expected) + ' , '
@@ -229,12 +229,12 @@ class host(threading.Thread):
             send_data(next_frame_to_send, self.frame_expected, self.buffer[next_frame_to_send][0], self.buffer[next_frame_to_send][1], self.host_id)
 
         elif msg[0] == "time_out":
-            if self.time_out_cnt < SW_size * 10:
+            if self.time_out_cnt < 10:
                 self.time_out_cnt = self.time_out_cnt + 1
                 frame_index = self.ack_expected
                 for _ in range(self.buffer_cnt):
 
-                    with open(str(address) + "/" + str(self.host_id) + ".send", "a") as f:
+                    with open(str(address) + "/" + "sendto_" + str(self.host_id), "a") as f:
                         record = "pdu_to_cnt = " + str(self.send_cnt) + ' , '
                         record += "staus = " + "TO" + ' , '
                         record += "ackedNo = " + str(self.ack_expected) + ' , '
@@ -287,7 +287,7 @@ class host(threading.Thread):
         while True:
             self.wait_for_event()
             self.create_send_data()
-            if (not self.is_recving and not self.is_sending) or self.time_out_cnt == SW_size * 10:
+            if (not self.is_recving and not self.is_sending) or self.time_out_cnt == 10:
                 break
         print("thread end!")
         del_thread.put(self.host_id)
