@@ -59,7 +59,7 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
     data += chr((frame_expected + SW_size) % (SW_size + 1)).encode()
     data += chr(file_state).encode()
     data += info
-    print("send:", data)
+    # print("send:", data)
     if thread[client_address].lost_cnt != lost_rate:
         thread[client_address].lost_cnt += 1
         server_socket.sendto(data, client_address)
@@ -71,7 +71,7 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
 def recv_data_thread():
     while True:
         receive_data, client = server_socket.recvfrom(data_size + 5)
-        print("receive:", receive_data)
+        # print("receive:", receive_data)
         file_state = int(receive_data[2])
         if client not in thread:
             if file_state != 0:
@@ -101,7 +101,6 @@ def send_data_thread():
         if send_to_address not in thread:
             thread[send_to_address] = host(send_to_address)
 
-        thread[send_to_address].send_lock.put(0)
         if thread[send_to_address].send_file_handle != None:
             thread[send_to_address].send_file_handle.close()
         thread[send_to_address].is_sending = True
@@ -109,7 +108,6 @@ def send_data_thread():
         thread[send_to_address].send_end_frame = None
         thread[send_to_address].send_file_handle = open(send_file_name, "rb")
         thread[send_to_address].msg.put(("sending_file"))
-        thread[send_to_address].send_lock.get(0)
 
 
 input_thread = threading.Thread(target=send_data_thread)
@@ -150,21 +148,25 @@ class host(threading.Thread):
         self.send_cnt = 0
         self.recv_cnt = 0
         self.lost_cnt = 0
+        self.ack = [False for _ in range(SW_size + 1)]
 
-    def send_time_out(self):
-        self.msg.put(("time_out", 0))
+    def send_time_out(self, frame_num):
+        self.send_lock.put(0)
+        if not self.ack[frame_num]:
+            self.msg.put(("time_out", 0))
+        self.send_lock.get()
 
     def start_timer(self, frame_num):
         self.stop_timer(frame_num)
-        timer = threading.Timer(time_out, self.send_time_out)
-        timer.setDaemon(True)
-        self.frame_timer[frame_num] = timer
-        timer.start()
+        self.ack[frame_num] = False
+        self.frame_timer[frame_num] = threading.Timer(time_out, self.send_time_out, (frame_num, ))
+        self.frame_timer[frame_num].setDaemon(True)
+        self.frame_timer[frame_num].start()
 
     def stop_timer(self, frame_num):
         if frame_num not in self.frame_timer:
             return
-        self.frame_timer[frame_num].cancel
+        self.frame_timer[frame_num].cancel()
 
     def wait_for_event(self):
         msg = self.msg.get()
@@ -183,7 +185,8 @@ class host(threading.Thread):
                 record = "pdu_recv = " + str(self.recv_cnt) + ' , '
                 record += "staus = " + status + ' , '
                 record += "pdu_exp = " + str(self.frame_expected) + ' , '
-                record += "recvNo = " + str(seq_num) + '\n'
+                record += "a1 = " + str(seq_num) + ' , '
+                record += "a2 = " + str(ack_num) + '\n'
                 f.writelines(record)
                 self.recv_cnt += 1
 
@@ -201,6 +204,7 @@ class host(threading.Thread):
 
                 while between(self.ack_expected, ack_num, self.next_frame_to_send):
                     self.stop_timer(self.ack_expected)
+                    self.ack[self.ack_expected] = True
                     self.buffer_cnt = self.buffer_cnt - 1
                     self.buffer.pop(self.ack_expected)
                     self.ack_expected = inc(self.ack_expected)
@@ -217,7 +221,8 @@ class host(threading.Thread):
                 record = "pdu_to_send = " + str(self.send_cnt) + ' , '
                 record += "staus = " + "NEW" + ' , '
                 record += "ackedNo = " + str(self.ack_expected) + ' , '
-                record += "sendNo = " + str(next_frame_to_send) + '\n'
+                record += "a1 = " + str(next_frame_to_send) + ' , '
+                record += "a2 = " + str((self.frame_expected + SW_size) % (SW_size + 1)) + '\n'
                 f.writelines(record)
                 self.send_cnt += 1
 
@@ -233,13 +238,14 @@ class host(threading.Thread):
                         record = "pdu_to_cnt = " + str(self.send_cnt) + ' , '
                         record += "staus = " + "TO" + ' , '
                         record += "ackedNo = " + str(self.ack_expected) + ' , '
-                        record += "sendNo = " + str(frame_index) + '\n'
+                        record += "a1 = " + str(frame_index) + ' , '
+                        record += "a2 = " + str((self.frame_expected + SW_size) % (SW_size + 1)) + '\n'
                         f.writelines(record)
                         self.send_cnt += 1
 
                     send_data(frame_index, self.frame_expected, self.buffer[frame_index][0], self.buffer[frame_index][1], self.host_id)
                     frame_index = inc(frame_index)
-                self.next_frame_to_send = inc(frame_index)
+                self.next_frame_to_send = frame_index
 
         self.send_lock.get()
 
