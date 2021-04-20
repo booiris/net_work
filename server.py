@@ -181,6 +181,7 @@ def send_msg():
                         buffer_state[buffer_index] = 1
                         thread_msg.put(("send_msg", key, buffer_index))
                 break
+        # TODO 改良空ack的发送时机
         if not flag:
             for key, x in host_state.items():
                 if x.time_out_cnt < 5 and (not x.is_end):
