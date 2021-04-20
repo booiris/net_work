@@ -14,7 +14,7 @@ error_rate = param["error_rate"]
 lost_rate = param["lost_rate"]
 SW_size = param["SW_size"]
 init_seq_no = param["init_seq_no"]
-time_out = param["time_out"] * 1.0 / 1000
+time_out = param["time_out"] / 1000
 
 if len(sys.argv) > 1:
     port = int(sys.argv[1])
@@ -26,6 +26,8 @@ host_name = socket.gethostbyname(host_name)
 address = (host_name, port)
 server_socket.bind(address)
 server_socket.settimeout(120)  # 设置监听最长时间为 20 s
+if not os.path.exists(str(address)):
+    os.makedirs(str(address))
 
 
 def inc(num):
@@ -48,7 +50,7 @@ def from_physical_layer(data):
 
 
 def check_data(data):
-    pass
+    return True
 
 
 def send_data(frame_num, frame_expected, file_state, info, client_address):
@@ -57,16 +59,19 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
     data += chr((frame_expected + SW_size) % (SW_size + 1)).encode()
     data += chr(file_state).encode()
     data += info
-    # print("send:", data)
-    server_socket.sendto(data, client_address)
+    print("send:", data)
+    if thread[client_address].lost_cnt != lost_rate:
+        thread[client_address].lost_cnt += 1
+        server_socket.sendto(data, client_address)
+    else:
+        thread[client_address].lost_cnt = 0
     thread[client_address].start_timer(frame_num)
 
 
 def recv_data_thread():
     while True:
         receive_data, client = server_socket.recvfrom(data_size + 5)
-        # print("receive:", receive_data)
-        check_data(receive_data)
+        print("receive:", receive_data)
         file_state = int(receive_data[2])
         if client not in thread:
             if file_state != 0:
@@ -125,6 +130,10 @@ class host(threading.Thread):
         self.recv_file_name = str(host_id) + '_to_' + str(address)
         if os.path.exists(self.recv_file_name):
             os.remove(self.recv_file_name)
+        if os.path.exists(str(address) + "/" + str(self.host_id) + ".recv"):
+            os.remove(str(address) + "/" + str(self.host_id) + ".recv")
+        if os.path.exists(str(address) + "/" + str(self.host_id) + ".send"):
+            os.remove(str(address) + "/" + str(self.host_id) + ".send")
         self.frame_timer = dict()
         self.buffer = dict()
         self.buffer_cnt = 0
@@ -138,9 +147,12 @@ class host(threading.Thread):
         self.send_lock = Queue(1)
         self.isDaemon = True
         self.start()
+        self.send_cnt = 0
+        self.recv_cnt = 0
+        self.lost_cnt = 0
 
     def send_time_out(self):
-        self.msg.put(("time_out"))
+        self.msg.put(("time_out", 0))
 
     def start_timer(self, frame_num):
         self.stop_timer(frame_num)
@@ -161,6 +173,20 @@ class host(threading.Thread):
             data = msg[1]
             seq_num, ack_num, file_state, info = from_physical_layer(data)
 
+            status = "OK"
+            if seq_num != self.frame_expected:
+                status = "NumErr"
+            if not check_data(data):
+                status = "DataErr"
+
+            with open(str(address) + "/" + str(self.host_id) + ".recv", "a") as f:
+                record = "pdu_recv = " + str(self.recv_cnt) + ' , '
+                record += "staus = " + status + ' , '
+                record += "pdu_exp = " + str(self.frame_expected) + ' , '
+                record += "recvNo = " + str(seq_num) + '\n'
+                f.writelines(record)
+                self.recv_cnt += 1
+
             if seq_num == self.frame_expected:
                 if file_state == 0:
                     self.is_recving = True
@@ -170,9 +196,8 @@ class host(threading.Thread):
                 self.time_out_cnt = 0
                 self.frame_expected = inc(self.frame_expected)
                 if info:
-                    f = open(self.recv_file_name, "ab")
-                    f.write(info)
-                    f.close
+                    with open(self.recv_file_name, "ab") as f:
+                        f.write(info)
 
                 while between(self.ack_expected, ack_num, self.next_frame_to_send):
                     self.stop_timer(self.ack_expected)
@@ -187,16 +212,34 @@ class host(threading.Thread):
             next_frame_to_send = msg[1]
             if self.buffer[next_frame_to_send] == 2:
                 self.is_sending = False
+
+            with open(str(address) + "/" + str(self.host_id) + ".send", "a") as f:
+                record = "pdu_to_send = " + str(self.send_cnt) + ' , '
+                record += "staus = " + "NEW" + ' , '
+                record += "ackedNo = " + str(self.ack_expected) + ' , '
+                record += "sendNo = " + str(next_frame_to_send) + '\n'
+                f.writelines(record)
+                self.send_cnt += 1
+
             send_data(next_frame_to_send, self.frame_expected, self.buffer[next_frame_to_send][0], self.buffer[next_frame_to_send][1], self.host_id)
 
         elif msg[0] == "time_out":
-            if self.time_out_cnt < 5:
+            if self.time_out_cnt < SW_size * 10:
                 self.time_out_cnt = self.time_out_cnt + 1
                 frame_index = self.ack_expected
-                for x in self.buffer.values():
-                    send_data(frame_index, self.frame_expected, x[0], x[1], self.host_id)
+                for _ in range(self.buffer_cnt):
+
+                    with open(str(address) + "/" + str(self.host_id) + ".send", "a") as f:
+                        record = "pdu_to_cnt = " + str(self.send_cnt) + ' , '
+                        record += "staus = " + "TO" + ' , '
+                        record += "ackedNo = " + str(self.ack_expected) + ' , '
+                        record += "sendNo = " + str(frame_index) + '\n'
+                        f.writelines(record)
+                        self.send_cnt += 1
+
+                    send_data(frame_index, self.frame_expected, self.buffer[frame_index][0], self.buffer[frame_index][1], self.host_id)
                     frame_index = inc(frame_index)
-                self.next_frame_to_send = frame_index
+                self.next_frame_to_send = inc(frame_index)
 
         self.send_lock.get()
 
@@ -238,7 +281,7 @@ class host(threading.Thread):
         while True:
             self.wait_for_event()
             self.create_send_data()
-            if (not self.is_recving and not self.is_sending) or self.time_out_cnt == 5:
+            if (not self.is_recving and not self.is_sending) or self.time_out_cnt == SW_size * 10:
                 break
         print("thread end!")
         del_thread.put(self.host_id)

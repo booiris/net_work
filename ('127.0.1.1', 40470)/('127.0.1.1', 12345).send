@@ -1,0 +1,4 @@
+pdu_to_send = 0 , staus = NEW , ackedNo = 0 , sendNo = 0
+pdu_to_send = 1 , staus = NEW , ackedNo = 0 , sendNo = 1
+pdu_to_send = 2 , staus = NEW , ackedNo = 0 , sendNo = 2
+pdu_to_send = 3 , staus = NEW , ackedNo = 0 , sendNo = 3
