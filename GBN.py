@@ -49,12 +49,29 @@ def from_physical_layer(data):
     seq_num = int(data[0])
     ack_num = int(data[1])
     file_state = int(data[2])
-    info = data[3:]
+    info = data[3:len(data) - 4]
     return seq_num, ack_num, file_state, info
 
 
 def check_data(data):
-    return True
+    check = data[len(data) - 4:len(data)]
+    data = data[:len(data) - 4]
+    if format(calculateCRC(data), "04x").encode() != check:
+        return False
+    else:
+        return True
+
+
+def calculateCRC(data):
+    crc = 0
+    for dat in data:
+        crc = (crc >> 8) | (crc << 8)
+        crc ^= dat
+        crc ^= (crc & 0xFF) >> 4
+        crc ^= crc << 12
+        crc ^= (crc & 0x00FF) << 5
+        crc &= 0xFFFF
+    return crc
 
 
 # 发送包的函数
@@ -64,6 +81,7 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
     data += chr((frame_expected + SW_size) % (SW_size + 1)).encode()
     data += chr(file_state).encode()
     data += info
+    data += format(calculateCRC(data), "04x").encode()
     print("send:", data)
     if thread[client_address].lost_cnt != lost_rate:
         thread[client_address].lost_cnt += 1
@@ -79,7 +97,7 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
 
 def recv_data_thread():
     while True:
-        receive_data, client = server_socket.recvfrom(data_size + 5)
+        receive_data, client = server_socket.recvfrom(data_size + 10)
         print("receive:", receive_data)
         file_state = int(receive_data[2])
         if client not in thread:
@@ -170,13 +188,13 @@ class host(threading.Thread):
         ##################################################################
 
         self.msg = Queue()  # 消息队列，用来保存发送、接收、超时消息
-        self.time_lock = Queue(1) # TODO
+        self.time_lock = Queue(1)  # TODO
         self.isDaemon = True  # 守护线程，为了防止主程序中途退出线程不能结束，可以不用管
         self.send_cnt = 0  # 发送序号，用于保存消息日志
         self.recv_cnt = 0  # 接受序号，用于保存消息日志
         self.lost_cnt = 0  # 丢包计数，当丢包到达 lost_rate 的时候就进行丢包处理
-        self.ack = [False for _ in range(SW_size + 1)] # 判断帧是否受到了 ack ，防止计时器在收到ack后依然发送超时信号
-        self.start() # 线程启动
+        self.ack = [False for _ in range(SW_size + 1)]  # 判断帧是否受到了 ack ，防止计时器在收到ack后依然发送超时信号
+        self.start()  # 线程启动
 
     # 发送超时信号
     def send_time_out(self, frame_num):
@@ -226,7 +244,7 @@ class host(threading.Thread):
                 self.recv_cnt += 1
             ##################################################################
 
-            if seq_num == self.frame_expected:
+            if seq_num == self.frame_expected and status != "DataErr":
                 if file_state == 0:
                     self.is_recving = True
                 elif file_state == 2:
