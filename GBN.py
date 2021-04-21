@@ -144,11 +144,11 @@ class host(threading.Thread):
         self.msg = Queue()
         self.send_lock = Queue(1)
         self.isDaemon = True
-        self.start()
         self.send_cnt = 0
         self.recv_cnt = 0
         self.lost_cnt = 0
         self.ack = [False for _ in range(SW_size + 1)]
+        self.start()
 
     def send_time_out(self, frame_num):
         self.send_lock.put(0)
