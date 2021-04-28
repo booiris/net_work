@@ -5,6 +5,7 @@ import sys
 import threading
 from queue import Queue
 import os
+import random
 
 with open("setting.json", 'r') as f:
     param = json.load(f)
@@ -89,9 +90,20 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
     crc = calculateCRC(data)
     data += bytes([crc // 256])
     data += bytes([crc % 256])
-    print("send:", data)
     if thread[client_address].lost_cnt != lost_rate:
         thread[client_address].lost_cnt += 1
+        if thread[client_address].wrong_cnt != error_rate:
+            thread[client_address].wrong_cnt += 1
+        else:
+            index = random.randint(0, len(data) - 1)
+            num = random.randint(0, 255)
+            temp = list(data)
+            temp[index] = num
+            data = b""
+            for i in temp:
+                data += bytes([i])
+            thread[client_address].wrong_cnt = 0
+        print("send:", data)
         server_socket.sendto(data, client_address)
     else:
         thread[client_address].lost_cnt = 0
@@ -200,6 +212,7 @@ class host(threading.Thread):
         self.send_cnt = 0  # 发送序号，用于保存消息日志
         self.recv_cnt = 0  # 接受序号，用于保存消息日志
         self.lost_cnt = 0  # 丢包计数，当丢包到达 lost_rate 的时候就进行丢包处理
+        self.wrong_cnt = 2  # 出错计数，当计数到达wrong_rate 的时候随机修改数据
         self.ack = [False for _ in range(SW_size + 1)]  # 判断帧是否受到了 ack ，防止计时器在收到ack后依然发送超时信号
         self.start()  # 线程启动
 
