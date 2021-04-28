@@ -46,17 +46,19 @@ def between(a, b, c):
 
 
 def from_physical_layer(data):
-    seq_num = int(data[0])
-    ack_num = int(data[1])
-    file_state = int(data[2])
-    info = data[3:len(data) - 4]
-    return seq_num, ack_num, file_state, info
+    file_state = int(data[0])
+    seq_num = int(data[1])
+    ack_num = int(data[2])
+    data_len = int(data[3]) * 256 + int(data[4])
+    info = data[5:len(data) - 2]
+    return seq_num, ack_num, file_state, info, data_len
 
 
 def check_data(data):
-    check = data[len(data) - 4:len(data)]
-    data = data[:len(data) - 4]
-    if format(calculateCRC(data), "04x").encode() != check:
+    data_len = len(data)
+    check = int(data[data_len - 1]) + int(data[data_len - 2]) * 256
+    data = data[:len(data) - 2]
+    if calculateCRC(data) != check:
         return False
     else:
         return True
@@ -77,11 +79,16 @@ def calculateCRC(data):
 # 发送包的函数
 def send_data(frame_num, frame_expected, file_state, info, client_address):
     data = b""
-    data += chr(frame_num).encode()
-    data += chr((frame_expected + SW_size) % (SW_size + 1)).encode()
-    data += chr(file_state).encode()
+    data += bytes([file_state])
+    data += bytes([frame_num])
+    data += bytes([(frame_expected + SW_size) % (SW_size + 1)])
+    data_len = len(info)
+    data += bytes([data_len // 256])
+    data += bytes([data_len % 256])
     data += info
-    data += format(calculateCRC(data), "04x").encode()
+    crc = calculateCRC(data)
+    data += bytes([crc // 256])
+    data += bytes([crc % 256])
     print("send:", data)
     if thread[client_address].lost_cnt != lost_rate:
         thread[client_address].lost_cnt += 1
@@ -97,9 +104,9 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
 
 def recv_data_thread():
     while True:
-        receive_data, client = server_socket.recvfrom(data_size + 10)
+        receive_data, client = server_socket.recvfrom(data_size + 20)
         print("receive:", receive_data)
-        file_state = int(receive_data[2])
+        file_state = int(receive_data[0])
         if client not in thread:
             if file_state != 0:
                 return
@@ -224,14 +231,14 @@ class host(threading.Thread):
 
         if msg[0] == "recv_data":
             data = msg[1]
-            seq_num, ack_num, file_state, info = from_physical_layer(data)
+            seq_num, ack_num, file_state, info, data_len = from_physical_layer(data)
 
             # 下面为记录日志部分，可以先不看
             ##################################################################
             status = "OK"
             if seq_num != self.frame_expected:
                 status = "NumErr"
-            if not check_data(data):
+            if not check_data(data) or len(info) != data_len:
                 status = "DataErr"
 
             with open(str(address) + "/" + "recvfrom_" + str(self.host_id), "a") as f:
