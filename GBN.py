@@ -307,7 +307,7 @@ class host(threading.Thread):
             send_data(next_frame_to_send, self.frame_expected, self.buffer[next_frame_to_send][0], self.buffer[next_frame_to_send][1], self.host_id)
 
         elif msg[0] == "time_out":
-            if self.time_out_cnt < 10:
+            if self.time_out_cnt < 50:
                 self.time_out_cnt = self.time_out_cnt + 1
                 frame_index = self.ack_expected
                 for _ in range(self.buffer_cnt):
