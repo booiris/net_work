@@ -103,7 +103,7 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
             for i in temp:
                 data += bytes([i])
             thread[client_address].wrong_cnt = 0
-        # print("send:", data)
+        # print("send:", data,client_address)
         server_socket.sendto(data, client_address)
     else:
         thread[client_address].lost_cnt = 0
@@ -124,12 +124,15 @@ def recv_data_thread():
                 return
             else:
                 thread[client] = host(client)
-        thread[client].msg.put(("recv_data", receive_data))
+        if file_state == 0:
+            thread[client].is_recving = True
+        thread[client].recv_msg.put((0, receive_data))
 
 
 recv_thread = threading.Thread(target=recv_data_thread)
 recv_thread.setDaemon(True)
 recv_thread.start()
+max_time_out = 10
 
 ###########################################################################
 
@@ -151,13 +154,14 @@ def send_data_thread():
         if send_to_address not in thread:
             thread[send_to_address] = host(send_to_address)
 
+        thread[send_to_address].send_lock.put(0)
         if thread[send_to_address].send_file_handle != None:
             thread[send_to_address].send_file_handle.close()
         thread[send_to_address].is_sending = True
         thread[send_to_address].is_send_start = False
         thread[send_to_address].send_end_frame = None
         thread[send_to_address].send_file_handle = open(send_file_name, "rb")
-        thread[send_to_address].msg.put(("sending_file"))
+        thread[send_to_address].send_lock.get()
 
 
 input_thread = threading.Thread(target=send_data_thread)
@@ -206,8 +210,13 @@ class host(threading.Thread):
         self.is_recving = False
         ##################################################################
 
-        self.msg = Queue()  # 消息队列，用来保存发送、接收、超时消息
+        self.recv_msg = Queue()  # 消息队列，用来保存发送、接收、超时消息
+        self.send_msg = Queue()
         self.time_lock = Queue(1)  # TODO
+        self.send_lock = Queue(1)
+        self.end_queue = Queue(2)
+        self.buffer_cnt_lock = Queue(1)
+        self.is_thread_end = False
         self.isDaemon = True  # 守护线程，为了防止主程序中途退出线程不能结束，可以不用管
         self.send_cnt = 0  # 发送序号，用于保存消息日志
         self.recv_cnt = 0  # 接受序号，用于保存消息日志
@@ -220,7 +229,7 @@ class host(threading.Thread):
     def send_time_out(self, frame_num):
         self.time_lock.put(0)
         if not self.ack[frame_num]:
-            self.msg.put(("time_out", None))
+            self.send_msg.put(0)
         self.time_lock.get()
 
     # 设置计时器
@@ -237,13 +246,15 @@ class host(threading.Thread):
             return
         self.frame_timer[frame_num].cancel()
 
-    # 处理消息队列中的消息,其实大致和书上的代码类似
-    def wait_for_event(self):
-        msg = self.msg.get()
-        self.time_lock.put(0)
-
-        if msg[0] == "recv_data":
-            data = msg[1]
+    def wait_for_recv(self):
+        while True:
+            data = self.recv_msg.get()
+            if data[0] != 0 or self.is_thread_end:
+                print(data[0])
+                self.end_queue.put(0)
+                break
+            data = data[1]
+            self.time_lock.put(0)
             seq_num, ack_num, file_state, info, data_len = from_physical_layer(data)
 
             # 下面为记录日志部分，可以先不看
@@ -265,9 +276,8 @@ class host(threading.Thread):
             ##################################################################
 
             if seq_num == self.frame_expected and status != "DataErr":
-                if file_state == 0:
-                    self.is_recving = True
-                elif file_state == 2:
+
+                if file_state == 2:
                     print("receive end!")
                     self.is_recving = False
                 self.time_out_cnt = 0
@@ -286,54 +296,45 @@ class host(threading.Thread):
                 if self.send_end_frame != None and self.ack_expected == self.send_end_frame:
                     self.is_sending = False
 
-        elif msg[0] == "send_data":
-            next_frame_to_send = msg[1]
-            if self.buffer[next_frame_to_send] == 2:
-                self.is_sending = False
+            self.time_lock.get()
 
-            # 下面为记录日志部分，可以先不看
-            ##################################################################
-            with open(str(address) + "/" + "sendto_" + str(self.host_id), "a") as f:
-                record = "pdu_to_send = " + str(self.send_cnt) + ' , '
-                record += "staus = " + "NEW" + ' , '
-                record += "ackedNo = " + str(self.ack_expected) + ' , '
-                record += "a1 = " + str(next_frame_to_send) + ' , '
-                record += "a2 = " + str((self.frame_expected + SW_size) % (SW_size + 1)) + '\n'
-                f.writelines(record)
-                self.send_cnt += 1
-            ##################################################################
+    def wait_for_send(self):
+        while True:
+            if not self.send_msg.empty():
+                self.send_msg.get()
+                self.do_time_out()
+            self.create_send_data()
+            if self.is_thread_end:
+                self.end_queue.put(0)
+                break
 
-            # 这里发送部分和书上不一样，因为构造包的过程已经在另一个函数中处理了，所以这里只是单纯地发送包
-            send_data(next_frame_to_send, self.frame_expected, self.buffer[next_frame_to_send][0], self.buffer[next_frame_to_send][1], self.host_id)
+    def do_time_out(self):
+        if self.time_out_cnt < max_time_out:
+            self.time_out_cnt = self.time_out_cnt + 1
+            frame_index = self.ack_expected
+            temp = self.buffer_cnt
+            for _ in range(temp):
 
-        elif msg[0] == "time_out":
-            if self.time_out_cnt < 10:
-                self.time_out_cnt = self.time_out_cnt + 1
-                frame_index = self.ack_expected
-                for _ in range(self.buffer_cnt):
+                # 下面为记录日志部分，可以先不看
+                ##################################################################
+                with open(str(address) + "/" + "sendto_" + str(self.host_id), "a") as f:
+                    record = "pdu_to_cnt = " + str(self.send_cnt) + ' , '
+                    record += "staus = " + "TO" + ' , '
+                    record += "ackedNo = " + str(self.ack_expected) + ' , '
+                    record += "a1 = " + str(frame_index) + ' , '
+                    record += "a2 = " + str((self.frame_expected + SW_size) % (SW_size + 1)) + '\n'
+                    f.writelines(record)
+                    self.send_cnt += 1
+                ##################################################################
 
-                    # 下面为记录日志部分，可以先不看
-                    ##################################################################
-                    with open(str(address) + "/" + "sendto_" + str(self.host_id), "a") as f:
-                        record = "pdu_to_cnt = " + str(self.send_cnt) + ' , '
-                        record += "staus = " + "TO" + ' , '
-                        record += "ackedNo = " + str(self.ack_expected) + ' , '
-                        record += "a1 = " + str(frame_index) + ' , '
-                        record += "a2 = " + str((self.frame_expected + SW_size) % (SW_size + 1)) + '\n'
-                        f.writelines(record)
-                        self.send_cnt += 1
-                    ##################################################################
-
-                    send_data(frame_index, self.frame_expected, self.buffer[frame_index][0], self.buffer[frame_index][1], self.host_id)
-                    frame_index = inc(frame_index)
-                self.next_frame_to_send = frame_index
-
-        self.time_lock.get()
+                send_data(frame_index, self.frame_expected, self.buffer[frame_index][0], self.buffer[frame_index][1], self.host_id)
+                frame_index = inc(frame_index)
+            self.next_frame_to_send = frame_index
 
     # 创建发送包
     def create_send_data(self):
         if (self.buffer_cnt < SW_size):
-
+            self.send_lock.put(0)
             # 如果需要向对放端口发送文件，就进行捎带确认
             buffer_index = self.next_frame_to_send
             if self.send_file_handle != None:
@@ -341,13 +342,11 @@ class host(threading.Thread):
                     # 如果是刚刚开始发送文件，需要发送一个特殊的包告诉对方开始传送数据
                     self.is_send_start = True
                     self.buffer[buffer_index] = (0, b'')
-                    self.msg.put(("send_data", buffer_index))
                 else:
                     data = self.send_file_handle.read(data_size)
                     if data:
                         # 传送数据
                         self.buffer[buffer_index] = (1, data)
-                        self.msg.put(("send_data", buffer_index))
                     else:
                         # 如果读到文件末尾，需要发送一个特殊的包告诉对方传送结束
                         self.send_file_handle.close()
@@ -355,15 +354,28 @@ class host(threading.Thread):
                         self.send_end_frame = buffer_index
 
                         self.buffer[buffer_index] = (2, b'')
-                        self.msg.put(("send_data", buffer_index))
 
             # 如果没有向对方端口发送文件的需求，就只发送 ack 确认包
             else:
                 self.buffer[buffer_index] = (1, b'')
-                self.msg.put(("send_data", buffer_index))
+
+            send_data(buffer_index, self.frame_expected, self.buffer[buffer_index][0], self.buffer[buffer_index][1], self.host_id)
+
+            # 下面为记录日志部分，可以先不看
+            ##################################################################
+            with open(str(address) + "/" + "sendto_" + str(self.host_id), "a") as f:
+                record = "pdu_to_send = " + str(self.send_cnt) + ' , '
+                record += "staus = " + "NEW" + ' , '
+                record += "ackedNo = " + str(self.ack_expected) + ' , '
+                record += "a1 = " + str(buffer_index) + ' , '
+                record += "a2 = " + str((self.frame_expected + SW_size) % (SW_size + 1)) + '\n'
+                f.writelines(record)
+                self.send_cnt += 1
+            ##################################################################
 
             self.next_frame_to_send = inc(self.next_frame_to_send)
             self.buffer_cnt += 1
+            self.send_lock.get()
 
     # 可以不用管
     def __del__(self):
@@ -371,15 +383,24 @@ class host(threading.Thread):
             self.send_file_handle.close()
         for x in self.frame_timer.values():
             x.cancel()
+        print("host_end")
 
     # 线程运行的主函数，通过消息队列阻塞，每次循环通过创建一个发送包保持端口的活性
     def run(self):
+        host_recv_thread = threading.Thread(target=self.wait_for_recv)
+        host_recv_thread.setDaemon(True)
+        host_recv_thread.start()
+        host_send_thread = threading.Thread(target=self.wait_for_send)
+        host_send_thread.setDaemon(True)
+        host_send_thread.start()
         while True:
-            self.wait_for_event()
-            self.create_send_data()
-            if (not self.is_recving and not self.is_sending) or self.time_out_cnt == 50:
+            if (not self.is_recving and not self.is_sending) or self.time_out_cnt == max_time_out:
+                self.is_thread_end = True
+                self.recv_msg.put((1, b''))
+                self.end_queue.get()
+                self.end_queue.get()
+                self.__del__()
                 break
-        print("thread end!")
         del_thread.put(self.host_id)
 
 
@@ -392,7 +413,6 @@ while True:
     try:
         thread_id = del_thread.get()
         temp = thread.pop(thread_id)
-        del temp
     except socket.timeout:
         print("Time out")
 

@@ -5,7 +5,6 @@ import sys
 import threading
 from queue import Queue
 import os
-import random
 
 with open("setting.json", 'r') as f:
     param = json.load(f)
@@ -47,19 +46,17 @@ def between(a, b, c):
 
 
 def from_physical_layer(data):
-    file_state = int(data[0])
-    seq_num = int(data[1])
-    ack_num = int(data[2])
-    data_len = int(data[3]) * 256 + int(data[4])
-    info = data[5:len(data) - 2]
-    return seq_num, ack_num, file_state, info, data_len
+    seq_num = int(data[0])
+    ack_num = int(data[1])
+    file_state = int(data[2])
+    info = data[3:len(data) - 4]
+    return seq_num, ack_num, file_state, info
 
 
 def check_data(data):
-    data_len = len(data)
-    check = int(data[data_len - 1]) + int(data[data_len - 2]) * 256
-    data = data[:len(data) - 2]
-    if calculateCRC(data) != check:
+    check = data[len(data) - 4:len(data)]
+    data = data[:len(data) - 4]
+    if format(calculateCRC(data), "04x").encode() != check:
         return False
     else:
         return True
@@ -80,30 +77,14 @@ def calculateCRC(data):
 # 发送包的函数
 def send_data(frame_num, frame_expected, file_state, info, client_address):
     data = b""
-    data += bytes([file_state])
-    data += bytes([frame_num])
-    data += bytes([(frame_expected + SW_size) % (SW_size + 1)])
-    data_len = len(info)
-    data += bytes([data_len // 256])
-    data += bytes([data_len % 256])
+    data += chr(frame_num).encode()
+    data += chr((frame_expected + SW_size) % (SW_size + 1)).encode()
+    data += chr(file_state).encode()
     data += info
-    crc = calculateCRC(data)
-    data += bytes([crc // 256])
-    data += bytes([crc % 256])
+    data += format(calculateCRC(data), "04x").encode()
+    # print("send:", data)
     if thread[client_address].lost_cnt != lost_rate:
         thread[client_address].lost_cnt += 1
-        if thread[client_address].wrong_cnt != error_rate:
-            thread[client_address].wrong_cnt += 1
-        else:
-            index = random.randint(0, len(data) - 1)
-            num = random.randint(0, 255)
-            temp = list(data)
-            temp[index] = num
-            data = b""
-            for i in temp:
-                data += bytes([i])
-            thread[client_address].wrong_cnt = 0
-        # print("send:", data)
         server_socket.sendto(data, client_address)
     else:
         thread[client_address].lost_cnt = 0
@@ -116,9 +97,9 @@ def send_data(frame_num, frame_expected, file_state, info, client_address):
 
 def recv_data_thread():
     while True:
-        receive_data, client = server_socket.recvfrom(data_size + 20)
+        receive_data, client = server_socket.recvfrom(data_size + 10)
         # print("receive:", receive_data)
-        file_state = int(receive_data[0])
+        file_state = int(receive_data[2])
         if client not in thread:
             if file_state != 0:
                 return
@@ -212,7 +193,6 @@ class host(threading.Thread):
         self.send_cnt = 0  # 发送序号，用于保存消息日志
         self.recv_cnt = 0  # 接受序号，用于保存消息日志
         self.lost_cnt = 0  # 丢包计数，当丢包到达 lost_rate 的时候就进行丢包处理
-        self.wrong_cnt = 2  # 出错计数，当计数到达wrong_rate 的时候随机修改数据
         self.ack = [False for _ in range(SW_size + 1)]  # 判断帧是否受到了 ack ，防止计时器在收到ack后依然发送超时信号
         self.start()  # 线程启动
 
@@ -244,14 +224,14 @@ class host(threading.Thread):
 
         if msg[0] == "recv_data":
             data = msg[1]
-            seq_num, ack_num, file_state, info, data_len = from_physical_layer(data)
+            seq_num, ack_num, file_state, info = from_physical_layer(data)
 
             # 下面为记录日志部分，可以先不看
             ##################################################################
             status = "OK"
             if seq_num != self.frame_expected:
                 status = "NumErr"
-            if not check_data(data) or len(info) != data_len:
+            if not check_data(data):
                 status = "DataErr"
 
             with open(str(address) + "/" + "recvfrom_" + str(self.host_id), "a") as f:

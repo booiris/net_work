@@ -1,9 +1,9 @@
 {
     "UDP_port": 40470,
     "data_size": 1,
-    "error_rate": 9,
-    "lost_rate": 5,
+    "error_rate": -1,
+    "lost_rate": -1,
     "SW_size": 8,
     "init_seq_no":0,
-    "time_out": 100
+    "time_out": 500
 }
