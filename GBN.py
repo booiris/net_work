@@ -124,6 +124,7 @@ def recv_data_thread():
                 return
             else:
                 thread[client] = host(client)
+                thread[client].recv_start_time = time.time()
         thread[client].msg.put(("recv_data", receive_data))
 
 
@@ -214,6 +215,7 @@ class host(threading.Thread):
         self.lost_cnt = 0  # 丢包计数，当丢包到达 lost_rate 的时候就进行丢包处理
         self.wrong_cnt = 2  # 出错计数，当计数到达wrong_rate 的时候随机修改数据
         self.ack = [False for _ in range(SW_size + 1)]  # 判断帧是否受到了 ack ，防止计时器在收到ack后依然发送超时信号
+        self.recv_start_time = None
         self.start()  # 线程启动
 
     # 发送超时信号
@@ -255,11 +257,9 @@ class host(threading.Thread):
                 status = "DataErr"
 
             with open(str(address) + "/" + "recvfrom_" + str(self.host_id), "a") as f:
-                record = "pdu_recv = " + str(self.recv_cnt) + ' , '
-                record += "staus = " + status + ' , '
-                record += "pdu_exp = " + str(self.frame_expected) + ' , '
-                record += "a1 = " + str(seq_num) + ' , '
-                record += "a2 = " + str(ack_num) + '\n'
+                record = "recv_num = " + str(self.recv_cnt) + ' , '
+                record += "recv_exp = " + str(self.frame_expected) + ' , '
+                record += "status = " + status + '\n'
                 f.writelines(record)
                 self.recv_cnt += 1
             ##################################################################
@@ -268,6 +268,12 @@ class host(threading.Thread):
                 if file_state == 0:
                     self.is_recving = True
                 elif file_state == 2:
+                    time_end = time.time()
+                    time_cost = time_end - self.recv_start_time
+
+                    with open(str(address) + "/" + "recvfrom_" + str(self.host_id), "a") as f:
+                        f.writelines(str(time_cost))
+
                     print("receive end!")
                     self.is_recving = False
                 self.time_out_cnt = 0
@@ -294,11 +300,9 @@ class host(threading.Thread):
             # 下面为记录日志部分，可以先不看
             ##################################################################
             with open(str(address) + "/" + "sendto_" + str(self.host_id), "a") as f:
-                record = "pdu_to_send = " + str(self.send_cnt) + ' , '
-                record += "staus = " + "NEW" + ' , '
-                record += "ackedNo = " + str(self.ack_expected) + ' , '
-                record += "a1 = " + str(next_frame_to_send) + ' , '
-                record += "a2 = " + str((self.frame_expected + SW_size) % (SW_size + 1)) + '\n'
+                record = "send_num = " + str(self.send_cnt) + ' , '
+                record += "send_ack = " + str(self.ack_expected) + ' , '
+                record += "status = " + "NEW\n"
                 f.writelines(record)
                 self.send_cnt += 1
             ##################################################################
@@ -315,11 +319,9 @@ class host(threading.Thread):
                     # 下面为记录日志部分，可以先不看
                     ##################################################################
                     with open(str(address) + "/" + "sendto_" + str(self.host_id), "a") as f:
-                        record = "pdu_to_cnt = " + str(self.send_cnt) + ' , '
-                        record += "staus = " + "TO" + ' , '
-                        record += "ackedNo = " + str(self.ack_expected) + ' , '
-                        record += "a1 = " + str(frame_index) + ' , '
-                        record += "a2 = " + str((self.frame_expected + SW_size) % (SW_size + 1)) + '\n'
+                        record = "send_num = " + str(self.send_cnt) + ' , '
+                        record += "send_ack = " + str(self.ack_expected) + ' , '
+                        record += "status = " + "TO\n"
                         f.writelines(record)
                         self.send_cnt += 1
                     ##################################################################
